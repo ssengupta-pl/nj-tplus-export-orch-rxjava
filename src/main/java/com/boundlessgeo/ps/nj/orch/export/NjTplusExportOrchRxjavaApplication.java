@@ -47,6 +47,7 @@ public class NjTplusExportOrchRxjavaApplication {
 	private GenericResponse runActivityWithRxJavaMultiThreaded(
 			final ExportJob exportJob) {
 		final GenericResponse genericResponse = new GenericResponse();
+		genericResponse.setSource("exportJob");
 		LinkedHashMap<String, String> messages = (LinkedHashMap<String, String>) genericResponse
 				.getInformation().get("messages");
 		if (messages == null) {
@@ -166,7 +167,7 @@ public class NjTplusExportOrchRxjavaApplication {
 				return genericResponse.getResult()
 						.equalsIgnoreCase(GenericResponse.SUCCESS);
 			}
-		}, pricingStream).subscribe();
+		}, pricingStream).retry().subscribe();
 
 		return genericResponse;
 	}
@@ -186,11 +187,9 @@ public class NjTplusExportOrchRxjavaApplication {
 				.just(subscriptionService.get(exportJob.getSubscriptionLevel(),
 						exportJob.getRequestedResource(),
 						exportJob.getRequestedOperation()));
-		// .subscribeOn(Schedulers.io());
 
 		Observable<GenericResponse> billingStandingCheckStream = Observable
 				.just(billingService.isUserInGoodStanding(exportJob.getUser()));
-		// .subscribeOn(Schedulers.io());
 
 		Observable<GenericResponse> checks = Observable
 				.merge(subscriptionCheckStream, billingStandingCheckStream)
