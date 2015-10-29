@@ -1,6 +1,5 @@
 package com.boundlessgeo.ps.nj.orch.export;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
 import org.slf4j.Logger;
@@ -17,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import rx.Observable;
 import rx.Statement;
 import rx.Subscriber;
+import rx.functions.Action1;
 import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.schedulers.Schedulers;
@@ -52,16 +52,14 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 
+
+
 	@RequestMapping(value = "/exportJobs", method = RequestMethod.POST,
 			consumes = "application/json", produces = "application/json")
 	public GenericResponse createExportJob(@RequestBody ExportJob exportJob) {
 		// return this.runActivityWithoutRxJava(exportJob);
 		// return this.runActivityWithRxJavaSingleThreaded(exportJob);
 		feignconfig.setToken(exportJob.getToken());
-		logger.error("Message logged at ERROR level");
-		logger.warn("Message logged at WARN level");
-		logger.info("Message logged at INFO level");
-		logger.debug("Message logged at DEBUG level");
 		return this.runActivityWithRxJavaMultiThreaded(exportJob);
 	}
 
@@ -76,8 +74,172 @@ public class NjTplusExportOrchRxjavaApplication {
 			messages = new LinkedHashMap<String, String>();
 			genericResponse.getInformation().put("messages", messages);
 		}
-		Observable<String>export=null;
 
+
+
+
+
+		//Another export observable, required if token needs to be refreshed
+		Observable<String> export2 = export2(exportJob);
+
+		Observable<String>export = export(exportJob, genericResponse,export2);
+
+
+		//Start the export job async.
+		export.subscribeOn(Schedulers.newThread()).subscribe(new Action1<String>() {
+			@Override
+			public void call(String s) {
+				genericResponse.setJobid(s);
+			}
+		});
+		//export.subscribe();
+
+
+		Observable<String>jobstatus = exportjobstatus(exportJob,genericResponse);
+
+		//Start the job status job once jobid is populated
+		Statement.ifThen(new Func0<Boolean>() {
+			@Override
+			public Boolean call() {
+				Boolean check = Long.parseLong(genericResponse.getJobid())>0;
+				return check;
+			}
+		}, jobstatus).retry().subscribe();
+
+
+
+
+
+		Observable<Integer>jobcount = exportjobcount(exportJob,genericResponse);
+
+		Statement.ifThen(new Func0<Boolean>() {
+			@Override
+			public Boolean call() {
+				Boolean check = genericResponse.getJobstatus().endsWith(".zip");
+				return check;
+			}
+		}, jobcount).retry().subscribe();
+
+
+
+
+
+		/*		Observable<GenericResponse> subscriptionCheckStream = subscription(exportJob);
+		subscriptionCheckStream.subscribe();
+
+		Observable<GenericResponse> billingStandingCheckStream = billingStanding(exportJob);
+		billingStandingCheckStream.subscribe();
+
+		Observable<GenericResponse> checks = standingSubscriptionMerge(genericResponse, subscriptionCheckStream,
+				billingStandingCheckStream);
+
+		Observable<GenericResponse> pricingStream = pricing(exportJob, genericResponse);
+		checks.subscribe();
+
+		Statement.ifThen(new Func0<Boolean>() {
+			@Override
+			public Boolean call() {
+				System.out.println("ifThen -> " + genericResponse);
+				return genericResponse.getResult()
+						.equalsIgnoreCase(GenericResponse.SUCCESS);
+			}
+		}, pricingStream).retry().subscribe();*/
+
+		return genericResponse;
+	}
+
+
+
+
+
+	/*	private Observable<String> exportjobstatus(final ExportJob exportJob) {
+		return Observable
+				.just(dafifService.getStatus(exportJob.getJobid()));
+	}*/
+
+	private Observable<Integer> exportjobcount(ExportJob exportJob,
+			final GenericResponse genericResponse) {
+		return Observable.create(new Observable.OnSubscribe() {
+			@Override
+			public void call(Object subscriber) {
+				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
+				try {
+					if (!mySubscriber.isUnsubscribed()) {
+						String count =dafifService.getCount(genericResponse.getJobid());
+						genericResponse.setRecordcount(Integer.parseInt(count));
+						mySubscriber.onNext(count);
+						mySubscriber.onCompleted();
+					}
+				} catch (Exception e) {
+					mySubscriber.onError(e);
+				}
+
+
+			}
+
+
+		});
+	}
+
+	private Observable<String> exportjobstatus(final ExportJob exportJob, final GenericResponse genericResponse) {
+		return Observable.create(new Observable.OnSubscribe() {
+			@Override
+			public void call(Object subscriber) {
+				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
+				try {
+					if (!mySubscriber.isUnsubscribed()) {
+						String status =dafifService.getStatus(genericResponse.getJobid());
+						genericResponse.setJobstatus(status);
+						mySubscriber.onNext(status);
+						mySubscriber.onCompleted();
+					}
+				} catch (Exception e) {
+					mySubscriber.onError(e);
+				}
+
+
+			}
+
+
+		})
+		.repeat()
+		.takeUntil(new Func1<String, Boolean>() {
+			@Override
+			public Boolean call(String response) {
+				return response.endsWith(".zip");
+			}
+		});
+	}
+
+
+
+
+	private Observable<String> export(final ExportJob exportJob, final GenericResponse genericResponse, Observable<String> export2) {
+		return Observable.create(new Observable.OnSubscribe() {
+			@Override
+			public void call(Object subscriber) {
+				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
+				try {
+					if (!mySubscriber.isUnsubscribed()) {
+						System.out.println("Trying to call export with token: " + feignconfig.getToken());
+						String jobid =dafifService.get(exportJob.getIcao(), exportJob.getDistance());
+						genericResponse.setJobid(jobid);
+						mySubscriber.onNext(jobid);
+						mySubscriber.onCompleted();
+					}
+				} catch (Exception e) {
+					mySubscriber.onError(e);
+				}
+
+
+			}
+
+
+		}).onErrorResumeNext(refreshTokenAndRetry(export2,exportJob.getUser(),exportJob.getPassword())).subscribeOn(Schedulers.computation());
+
+	}
+
+	private Observable<String> export2(final ExportJob exportJob) {
 		Observable<String> export2 = Observable.create(new Observable.OnSubscribe() {
 			@Override
 			public void call(Object subscriber) {
@@ -97,145 +259,7 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 		});
-
-
-		export = Observable.create(new Observable.OnSubscribe() {
-			@Override
-			public void call(Object subscriber) {
-				Subscriber mySubscriber = (Subscriber)subscriber;
-				try {
-					if (!mySubscriber.isUnsubscribed()) {
-						System.out.println("Trying to call export with token: " + feignconfig.getToken());
-						mySubscriber.onNext(dafifService.get(exportJob.getIcao(), exportJob.getDistance()));
-						mySubscriber.onCompleted();
-					}
-				} catch (Exception e) {
-					mySubscriber.onError(e);
-				}
-
-
-			}
-
-
-		}).onErrorResumeNext(refreshTokenAndRetry(export2,exportJob.getUser(),exportJob.getPassword()));
-		//.subscribeOn(Schedulers.computation());
-		export.subscribe();
-
-		Observable<GenericResponse> subscriptionCheckStream = Observable
-				.just(subscriptionService.get(exportJob.getSubscriptionLevel(),
-						exportJob.getRequestedResource(),
-						exportJob.getRequestedOperation()))
-						.subscribeOn(Schedulers.newThread());
-
-		Observable<GenericResponse> billingStandingCheckStream = Observable
-				.just(billingService.isUserInGoodStanding(exportJob.getUser()))
-				.subscribeOn(Schedulers.newThread());
-
-		Observable<GenericResponse> checks = Observable
-				.merge(subscriptionCheckStream, billingStandingCheckStream)
-				.all(new Func1<GenericResponse, Boolean>() {
-					@Override
-					public Boolean call(GenericResponse t) {
-						((LinkedHashMap<String, String>) genericResponse
-								.getInformation().get("messages"))
-								.put(t.getSource(), t.getMessage());
-
-						System.out.println("checks.all -> " + genericResponse);
-
-						return t.getResult()
-								.equalsIgnoreCase(GenericResponse.SUCCESS);
-					}
-				}).map(new Func1<Boolean, GenericResponse>() {
-					@Override
-					public GenericResponse call(Boolean t) {
-						if (t) {
-							genericResponse.setResult(GenericResponse.SUCCESS);
-							genericResponse.setMessage("Checks passed");
-						} else {
-							genericResponse.setResult(GenericResponse.ERROR);
-							genericResponse.setMessage("Checks did not pass");
-						}
-
-						System.out.println("checks.map -> " + genericResponse);
-
-						return new GenericResponse();
-					}
-				});
-
-		Observable<GenericResponse> pricingStream = Observable
-				.just(airportDataService
-						.queryForAirportData(exportJob.getQuery()))
-						.map(new Func1<GenericResponse, GenericResponse>() {
-							@Override
-							public GenericResponse call(GenericResponse t) {
-								((LinkedHashMap<String, String>) genericResponse
-										.getInformation().get("messages"))
-										.put(t.getSource(), t.getMessage());
-								System.out.println(
-										"pricingStream.map, 1 -> " + genericResponse);
-
-								return t;
-							}
-						}).map(new Func1<GenericResponse, QueryMetadata>() {
-							@Override
-							public QueryMetadata call(GenericResponse t) {
-								QueryMetadata queryMetadata = new QueryMetadata();
-								queryMetadata.setNumRows(
-										(int) t.getInformation().get("numRows"));
-								queryMetadata.setFieldTypes(
-										(ArrayList<LinkedHashMap<String, String>>) t
-										.getInformation().get("fieldTypes"));
-								System.out.println(
-										"pricingStream.map, 2 -> " + genericResponse);
-
-								return queryMetadata;
-							}
-						}).first().map(new Func1<QueryMetadata, GenericResponse>() {
-							@Override
-							public GenericResponse call(QueryMetadata t) {
-								return pricingService.price(t);
-							}
-						}).map(new Func1<GenericResponse, GenericResponse>() {
-							@Override
-							public GenericResponse call(GenericResponse t) {
-								((LinkedHashMap<String, String>) genericResponse
-										.getInformation().get("messages"))
-										.put(t.getSource(), t.getMessage());
-								System.out.println(
-										"pricingStream.map, 4 -> " + genericResponse);
-
-								return t;
-							}
-						}).map(new Func1<GenericResponse, GenericResponse>() {
-							@Override
-							public GenericResponse call(GenericResponse t) {
-								genericResponse.setSource("exportJob");
-								genericResponse.setResult(t.getResult());
-								genericResponse.setMessage(t.getMessage());
-								genericResponse.getInformation()
-								.putAll(t.getInformation());
-								((LinkedHashMap<String, String>) genericResponse
-										.getInformation().get("messages"))
-										.put("exportJob", t.getMessage());
-								System.out.println(
-										"pricingStream.map, 5 -> " + genericResponse);
-
-								return t;
-							}
-						});
-
-		checks.subscribe();
-
-		Statement.ifThen(new Func0<Boolean>() {
-			@Override
-			public Boolean call() {
-				System.out.println("ifThen -> " + genericResponse);
-				return genericResponse.getResult()
-						.equalsIgnoreCase(GenericResponse.SUCCESS);
-			}
-		}, pricingStream).retry().subscribe();
-
-		return genericResponse;
+		return export2;
 	}
 
 	public Observable<String> refreshToken(final String user, final String password) {
@@ -245,7 +269,7 @@ public class NjTplusExportOrchRxjavaApplication {
 
 			@Override
 			public void call(Object t) {
-				Subscriber mySubscriber = (Subscriber)t;
+				Subscriber<String> mySubscriber = (Subscriber<String>)t;
 				try {
 					mySubscriber.onNext(tokenService.get(user, password));
 					mySubscriber.onCompleted();
