@@ -162,22 +162,21 @@ public class NjTplusExportOrchRxjavaApplication {
 	}
 
 	private Observable<String> exportjobstatus(final ExportJob exportJob, final GenericResponse genericResponse) {
-		return Observable.create(new Observable.OnSubscribe<String>() {
-			@Override
-			public void call(Subscriber<? super String> subscriber) {
-				try {
-					if (!subscriber.isUnsubscribed()) {
-						String status =dafifService.getStatus(genericResponse.getJobid());
-						genericResponse.setJobstatus(status);
-						subscriber.onNext(status);
-						subscriber.onCompleted();
-					}
-				} catch (Exception e) {
-					subscriber.onError(e);
+		return Observable.create((Subscriber<? super String>subscriber)-> {
+
+			try {
+				if (!subscriber.isUnsubscribed()) {
+					String status =dafifService.getStatus(genericResponse.getJobid());
+					genericResponse.setJobstatus(status);
+					subscriber.onNext(status);
+					subscriber.onCompleted();
 				}
-
-
+			} catch (Exception e) {
+				subscriber.onError(e);
 			}
+
+
+
 
 
 
@@ -196,23 +195,22 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 	private Observable<String> export(final ExportJob exportJob, final GenericResponse genericResponse, Observable<String> export2) {
-		return Observable.create(new Observable.OnSubscribe<String>() {
-			@Override
-			public void call(Subscriber<? super String>subscriber) {
-				try {
-					if (!subscriber.isUnsubscribed()) {
-						System.out.println("Trying to call export with token: " + feignconfig.getToken());
-						String jobid =dafifService.get(exportJob.getIcao(), exportJob.getDistance());
-						genericResponse.setJobid(jobid);
-						subscriber.onNext(jobid);
-						subscriber.onCompleted();
-					}
-				} catch (Exception e) {
-					subscriber.onError(e);
+		return Observable.create((Subscriber<? super String>subscriber)-> {
+
+			try {
+				if (!subscriber.isUnsubscribed()) {
+					System.out.println("Trying to call export with token: " + feignconfig.getToken());
+					String jobid =dafifService.get(exportJob.getIcao(), exportJob.getDistance());
+					genericResponse.setJobid(jobid);
+					subscriber.onNext(jobid);
+					subscriber.onCompleted();
 				}
-
-
+			} catch (Exception e) {
+				subscriber.onError(e);
 			}
+
+
+
 
 
 		}).onErrorResumeNext(refreshTokenAndRetry(export2,exportJob.getUser(),exportJob.getPassword())).subscribeOn(Schedulers.computation());
@@ -251,22 +249,21 @@ public class NjTplusExportOrchRxjavaApplication {
 		});
 	}
 	private <T> Func1<Throwable,? extends Observable<? extends T>> refreshTokenAndRetry(final Observable<T> toBeResumed, final String user, final String password) {
-		return new Func1<Throwable, Observable<? extends T>>() {
-			@Override
-			public Observable<? extends T> call(Throwable throwable) {
-				// Here check if the error thrown really is a 403
-				if (isHttp401Error(throwable)) {
-					return refreshToken(user, password).flatMap(tokenin-> {
-						feignconfig.setToken(tokenin);
-						System.out.println("Token refreshed: " + tokenin);
-						System.out.println(toBeResumed.toString());
-						return toBeResumed;
+		return (throwable)-> {
 
-					});
-				}
-				// re-throw this error because it's not recoverable from here
-				return Observable.error(throwable);
+			// Here check if the error thrown really is a 403
+			if (isHttp401Error(throwable)) {
+				return refreshToken(user, password).flatMap(tokenin-> {
+					feignconfig.setToken(tokenin);
+					System.out.println("Token refreshed: " + tokenin);
+					System.out.println(toBeResumed.toString());
+					return toBeResumed;
+
+				});
 			}
+			// re-throw this error because it's not recoverable from here
+			return Observable.error(throwable);
+
 		};
 	}
 
