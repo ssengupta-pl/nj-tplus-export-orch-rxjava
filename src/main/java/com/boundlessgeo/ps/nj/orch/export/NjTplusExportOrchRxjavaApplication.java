@@ -46,6 +46,9 @@ public class NjTplusExportOrchRxjavaApplication {
 	private DafifExportServiceClient dafifService;
 
 	@Autowired
+	private PricingServiceClient2 pricingService2;
+
+	@Autowired
 	FeignConfiguration feignconfig;
 
 
@@ -96,12 +99,14 @@ public class NjTplusExportOrchRxjavaApplication {
 		},
 		jobstatus).retry().subscribe();
 
-		Observable<Integer>jobcount = exportjobcount(exportJob,genericResponse);
-
+		//Observable<Integer>jobcount = exportjobcount(exportJob,genericResponse);
+		Observable<Double>totalprice = totalprice(exportJob,genericResponse);
 		Statement.ifThen(()->{
 			return genericResponse.getJobstatus().endsWith(".zip");
 		},
-		jobcount).retry().subscribe();
+		totalprice).retry().subscribe();
+
+
 
 
 
@@ -140,6 +145,20 @@ public class NjTplusExportOrchRxjavaApplication {
 				.just(dafifService.getStatus(exportJob.getJobid()));
 	}*/
 
+	private Observable<Double>rowprice(String icao){
+		return Observable.create(subscriber->{
+			try {
+				if (!subscriber.isUnsubscribed()) {
+					Double rowprice = pricingService2.getRowPrice(icao).getRowprice();
+					subscriber.onNext(rowprice);
+					subscriber.onCompleted();
+				}
+			}catch(Exception e) {
+				subscriber.onError(e);
+			}
+		});
+	}
+
 	private Observable<Integer> exportjobcount(ExportJob exportJob,
 			final GenericResponse genericResponse) {
 		return Observable.create(subscriber->{
@@ -159,6 +178,14 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 				);
+	}
+
+	private Observable<Double>totalprice(ExportJob exportJob,final GenericResponse genericResponse){
+		return Observable.zip(rowprice(exportJob.getIcao()),exportjobcount(exportJob,genericResponse),(rowprice,rowcount)->{
+			Double price =  rowprice*rowcount;
+			genericResponse.setTotalprice(price);
+			return price;
+		});
 	}
 
 	private Observable<String> exportjobstatus(final ExportJob exportJob, final GenericResponse genericResponse) {

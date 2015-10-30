@@ -29,9 +29,19 @@ public class GenericResponse {
 
 	private Integer recordcount;
 
+	private Double totalprice;
+
 	private HashMap<String, Object> information = new HashMap<String, Object>();
 
 
+
+	public Double getTotalprice() {
+		return totalprice;
+	}
+
+	public void setTotalprice(Double totalprice) {
+		this.totalprice = totalprice;
+	}
 
 	public Integer getRecordcount() {
 		return recordcount;
