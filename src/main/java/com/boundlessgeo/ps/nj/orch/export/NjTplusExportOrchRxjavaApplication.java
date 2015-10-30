@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.RestController;
 import rx.Observable;
 import rx.Statement;
 import rx.Subscriber;
-import rx.functions.Action1;
 import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.schedulers.Schedulers;
@@ -86,12 +85,7 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 		//Start the export job async.
-		export.subscribeOn(Schedulers.newThread()).subscribe(new Action1<String>() {
-			@Override
-			public void call(String s) {
-				genericResponse.setJobid(s);
-			}
-		});
+		export.subscribeOn(Schedulers.newThread()).subscribe((value)->{genericResponse.setJobid(value);});
 		//export.subscribe();
 
 
