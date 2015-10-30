@@ -16,7 +16,6 @@ import org.springframework.web.bind.annotation.RestController;
 import rx.Observable;
 import rx.Statement;
 import rx.Subscriber;
-import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.schedulers.Schedulers;
 import feign.FeignException;
@@ -92,27 +91,17 @@ public class NjTplusExportOrchRxjavaApplication {
 		Observable<String>jobstatus = exportjobstatus(exportJob,genericResponse);
 
 		//Start the job status job once jobid is populated
-		Statement.ifThen(new Func0<Boolean>() {
-			@Override
-			public Boolean call() {
-				Boolean check = Long.parseLong(genericResponse.getJobid())>0;
-				return check;
-			}
-		}, jobstatus).retry().subscribe();
-
-
-
-
+		Statement.ifThen(()->{
+			return Long.parseLong(genericResponse.getJobid())>0;
+		},
+		jobstatus).retry().subscribe();
 
 		Observable<Integer>jobcount = exportjobcount(exportJob,genericResponse);
 
-		Statement.ifThen(new Func0<Boolean>() {
-			@Override
-			public Boolean call() {
-				Boolean check = genericResponse.getJobstatus().endsWith(".zip");
-				return check;
-			}
-		}, jobcount).retry().subscribe();
+		Statement.ifThen(()->{
+			return genericResponse.getJobstatus().endsWith(".zip");
+		},
+		jobcount).retry().subscribe();
 
 
 
@@ -153,46 +142,44 @@ public class NjTplusExportOrchRxjavaApplication {
 
 	private Observable<Integer> exportjobcount(ExportJob exportJob,
 			final GenericResponse genericResponse) {
-		return Observable.create(new Observable.OnSubscribe() {
-			@Override
-			public void call(Object subscriber) {
-				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
-				try {
-					if (!mySubscriber.isUnsubscribed()) {
-						String count =dafifService.getCount(genericResponse.getJobid());
-						genericResponse.setRecordcount(Integer.parseInt(count));
-						mySubscriber.onNext(count);
-						mySubscriber.onCompleted();
-					}
-				} catch (Exception e) {
-					mySubscriber.onError(e);
+		return Observable.create(subscriber->{
+
+			try {
+				if (!subscriber.isUnsubscribed()) {
+					Integer count =Integer.parseInt(dafifService.getCount(genericResponse.getJobid()));
+					genericResponse.setRecordcount(count);
+					subscriber.onNext(count);
+					subscriber.onCompleted();
 				}
-
-
+			} catch (Exception e) {
+				subscriber.onError(e);
 			}
+		}
 
 
-		});
+
+				);
 	}
 
 	private Observable<String> exportjobstatus(final ExportJob exportJob, final GenericResponse genericResponse) {
-		return Observable.create(new Observable.OnSubscribe() {
+		return Observable.create(new Observable.OnSubscribe<String>() {
 			@Override
-			public void call(Object subscriber) {
-				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
+			public void call(Subscriber<? super String> subscriber) {
 				try {
-					if (!mySubscriber.isUnsubscribed()) {
+					if (!subscriber.isUnsubscribed()) {
 						String status =dafifService.getStatus(genericResponse.getJobid());
 						genericResponse.setJobstatus(status);
-						mySubscriber.onNext(status);
-						mySubscriber.onCompleted();
+						subscriber.onNext(status);
+						subscriber.onCompleted();
 					}
 				} catch (Exception e) {
-					mySubscriber.onError(e);
+					subscriber.onError(e);
 				}
 
 
 			}
+
+
 
 
 		})
@@ -209,20 +196,19 @@ public class NjTplusExportOrchRxjavaApplication {
 
 
 	private Observable<String> export(final ExportJob exportJob, final GenericResponse genericResponse, Observable<String> export2) {
-		return Observable.create(new Observable.OnSubscribe() {
+		return Observable.create(new Observable.OnSubscribe<String>() {
 			@Override
-			public void call(Object subscriber) {
-				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
+			public void call(Subscriber<? super String>subscriber) {
 				try {
-					if (!mySubscriber.isUnsubscribed()) {
+					if (!subscriber.isUnsubscribed()) {
 						System.out.println("Trying to call export with token: " + feignconfig.getToken());
 						String jobid =dafifService.get(exportJob.getIcao(), exportJob.getDistance());
 						genericResponse.setJobid(jobid);
-						mySubscriber.onNext(jobid);
-						mySubscriber.onCompleted();
+						subscriber.onNext(jobid);
+						subscriber.onCompleted();
 					}
 				} catch (Exception e) {
-					mySubscriber.onError(e);
+					subscriber.onError(e);
 				}
 
 
@@ -234,22 +220,19 @@ public class NjTplusExportOrchRxjavaApplication {
 	}
 
 	private Observable<String> export2(final ExportJob exportJob) {
-		Observable<String> export2 = Observable.create(new Observable.OnSubscribe() {
-			@Override
-			public void call(Object subscriber) {
-				Subscriber<String> mySubscriber = (Subscriber<String>)subscriber;
-				try {
-					if (!mySubscriber.isUnsubscribed()) {
-						System.out.println("Export2!");
-						mySubscriber.onNext(dafifService.get(exportJob.getIcao(), exportJob.getDistance()));
-						mySubscriber.onCompleted();
-					}
-				} catch (Exception e) {
-					mySubscriber.onError(e);
+		Observable<String> export2 = Observable.create(subscriber-> {
+			try {
+				if (!subscriber.isUnsubscribed()) {
+					System.out.println("Export2!");
+					subscriber.onNext(dafifService.get(exportJob.getIcao(), exportJob.getDistance()));
+					subscriber.onCompleted();
 				}
-
-
+			} catch (Exception e) {
+				subscriber.onError(e);
 			}
+
+
+
 
 
 		});
@@ -257,20 +240,14 @@ public class NjTplusExportOrchRxjavaApplication {
 	}
 
 	public Observable<String> refreshToken(final String user, final String password) {
-		return Observable.create(new Observable.OnSubscribe() {
-
-
-
-			@Override
-			public void call(Object t) {
-				Subscriber<String> mySubscriber = (Subscriber<String>)t;
-				try {
-					mySubscriber.onNext(tokenService.get(user, password));
-					mySubscriber.onCompleted();
-				}catch(Exception e) {
-					mySubscriber.onError(e);
-				}
+		return Observable.create(subscriber-> {
+			try {
+				subscriber.onNext(tokenService.get(user, password));
+				subscriber.onCompleted();
+			}catch(Exception e) {
+				subscriber.onError(e);
 			}
+
 		});
 	}
 	private <T> Func1<Throwable,? extends Observable<? extends T>> refreshTokenAndRetry(final Observable<T> toBeResumed, final String user, final String password) {
@@ -279,14 +256,12 @@ public class NjTplusExportOrchRxjavaApplication {
 			public Observable<? extends T> call(Throwable throwable) {
 				// Here check if the error thrown really is a 403
 				if (isHttp401Error(throwable)) {
-					return refreshToken(user, password).flatMap(new Func1<String, Observable<? extends T>>() {
-						@Override
-						public Observable<? extends T> call(String tokenin) {
-							feignconfig.setToken(tokenin);
-							System.out.println("Token refreshed: " + tokenin);
-							System.out.println(toBeResumed.toString());
-							return toBeResumed;
-						}
+					return refreshToken(user, password).flatMap(tokenin-> {
+						feignconfig.setToken(tokenin);
+						System.out.println("Token refreshed: " + tokenin);
+						System.out.println(toBeResumed.toString());
+						return toBeResumed;
+
 					});
 				}
 				// re-throw this error because it's not recoverable from here
