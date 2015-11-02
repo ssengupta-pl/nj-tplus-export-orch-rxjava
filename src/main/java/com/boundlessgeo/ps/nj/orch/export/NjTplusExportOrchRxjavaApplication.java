@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 import rx.Observable;
+import rx.Observable.OnSubscribe;
 import rx.Statement;
 import rx.Subscriber;
 import rx.functions.Func1;
@@ -132,6 +133,8 @@ public class NjTplusExportOrchRxjavaApplication {
 						.equalsIgnoreCase(GenericResponse.SUCCESS);
 			}
 		}, pricingStream).retry().subscribe();*/
+		
+		subscriberIsInGoodStanding(exportJob.getUser()).subscribe((String standing) -> System.out.println(standing));
 
 		return genericResponse;
 	}
@@ -303,6 +306,20 @@ public class NjTplusExportOrchRxjavaApplication {
 				out=true;
 		}
 		return out;
+	}
+	
+	private Observable<String> subscriberIsInGoodStanding(String userName) {
+		return Observable.create(subscriber -> {
+			try {
+				String goodStanding = billingService.isUserInGoodStanding(userName);
+				if(!subscriber.isUnsubscribed()) {
+					subscriber.onNext(goodStanding);
+					subscriber.onCompleted();
+				} 
+			} catch (Exception e) {
+				subscriber.onError(e);
+			}		
+		});
 	}
 
 	public static void main(String[] args) {
