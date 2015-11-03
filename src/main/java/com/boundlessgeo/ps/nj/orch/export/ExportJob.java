@@ -9,6 +9,10 @@ package com.boundlessgeo.ps.nj.orch.export;
 public class ExportJob {
 	private String user;
 
+	private String password;
+
+	private String token;
+
 	private String requestedResource;
 
 	private String requestedOperation;
@@ -16,6 +20,71 @@ public class ExportJob {
 	private String subscriptionLevel;
 
 	private String query;
+
+	private String icao;
+
+	private Double distance;
+
+	private String jobid;
+
+	private String jobstatus;
+
+
+
+
+
+
+
+
+	public String getJobstatus() {
+		return jobstatus;
+	}
+
+	public void setJobstatus(String jobstatus) {
+		this.jobstatus = jobstatus;
+	}
+
+	public String getJobid() {
+		return jobid;
+	}
+
+	public void setJobid(String jobid) {
+		this.jobid = jobid;
+	}
+
+	public String getToken() {
+		return token;
+	}
+
+	public void setToken(String token) {
+		this.token = token;
+	}
+
+	public String getIcao() {
+		return icao;
+	}
+
+	public void setIcao(String icao) {
+		this.icao = icao;
+	}
+
+
+
+	public Double getDistance() {
+		return distance;
+	}
+
+	public void setDistance(Double distance) {
+		this.distance = distance;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
+	}
 
 	/**
 	 * @return the user

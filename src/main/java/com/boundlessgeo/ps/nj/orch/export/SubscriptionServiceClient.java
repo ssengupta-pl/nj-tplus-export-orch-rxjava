@@ -1,15 +1,20 @@
 package com.boundlessgeo.ps.nj.orch.export;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.netflix.feign.FeignClient;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(url = "http://localhost:8082")
+import com.flightopseng.dragonfly.tplus.internal.model.pricing.SubscriptionLevelAuthorization;
+
+@FeignClient(url = "http://apps.dev.flightopseng.com")
 public interface SubscriptionServiceClient {
 	@RequestMapping(method = RequestMethod.GET,
-			value = "/mss/{level}/{resource}/{operation}/check")
-	public GenericResponse get(@RequestParam("level") String level,
-			@RequestParam("resource") String resource,
-			@RequestParam("operation") String operation);
+			value = "/FlightOps-0.1/teamdbint/subscriptions/{subscription}/{resource}/{operation}",
+			consumes = "application/json", produces = "application/json")
+	public SubscriptionLevelAuthorization get(@PathVariable("subscription") String subscription,
+			@PathVariable("resource") String resource,
+			@PathVariable("operation") String operation);
 }

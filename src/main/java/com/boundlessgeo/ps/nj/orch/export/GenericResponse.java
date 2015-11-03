@@ -23,7 +23,51 @@ public class GenericResponse {
 
 	private String message;
 
+	private String jobid;
+
+	private String jobstatus;
+
+	private Integer recordcount;
+
+	private Double totalprice;
+
 	private HashMap<String, Object> information = new HashMap<String, Object>();
+
+
+
+	public Double getTotalprice() {
+		return totalprice;
+	}
+
+	public void setTotalprice(Double totalprice) {
+		this.totalprice = totalprice;
+	}
+
+	public Integer getRecordcount() {
+		return recordcount;
+	}
+
+	public void setRecordcount(Integer recordcount) {
+		this.recordcount = recordcount;
+	}
+
+	public String getJobid() {
+		return jobid;
+	}
+
+	public void setJobid(String jobid) {
+		this.jobid = jobid;
+	}
+
+	public String getJobstatus() {
+		return jobstatus;
+	}
+
+	public void setJobstatus(String jobstatus) {
+		this.jobstatus = jobstatus;
+	}
+
+
 
 	/**
 	 * @return the source
