@@ -1,6 +1,8 @@
 package com.boundlessgeo.ps.nj.orch.export;
 
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,11 +15,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.flightopseng.dragonfly.tplus.internal.model.pricing.SubscriptionLevelAuthorization;
+
 import rx.Observable;
 import rx.Observable.OnSubscribe;
 import rx.Statement;
 import rx.Subscriber;
 import rx.functions.Func1;
+import rx.functions.Func2;
+import rx.observables.BlockingObservable;
+import rx.observables.ConnectableObservable;
 import rx.schedulers.Schedulers;
 import feign.FeignException;
 
@@ -48,13 +55,12 @@ public class NjTplusExportOrchRxjavaApplication {
 
 	@Autowired
 	private PricingServiceClient2 pricingService2;
+	
+	@Autowired
+	SubscriptionServiceClient ssc;
 
 	@Autowired
 	FeignConfiguration feignconfig;
-
-
-
-
 
 	@RequestMapping(value = "/exportJobs", method = RequestMethod.POST,
 			consumes = "application/json", produces = "application/json")
@@ -68,165 +74,251 @@ public class NjTplusExportOrchRxjavaApplication {
 	@SuppressWarnings({ "unchecked" })
 	private GenericResponse runActivityWithRxJavaMultiThreaded(
 			final ExportJob exportJob) {
-		final GenericResponse genericResponse = new GenericResponse();
-		genericResponse.setSource("exportJob");
-		LinkedHashMap<String, String> messages = (LinkedHashMap<String, String>) genericResponse
-				.getInformation().get("messages");
-		if (messages == null) {
-			messages = new LinkedHashMap<String, String>();
-			genericResponse.getInformation().put("messages", messages);
-		}
-
-
-
-
-
-		//Another export observable, required if token needs to be refreshed
-		Observable<String> export2 = export2(exportJob);
-
-		Observable<String>export = export(exportJob, genericResponse,export2);
-
-
-		//Start the export job async.
-		export.subscribeOn(Schedulers.newThread()).subscribe((value)->{genericResponse.setJobid(value);});
-		//export.subscribe();
-
-
-		Observable<String>jobstatus = exportjobstatus(exportJob,genericResponse);
-
-		//Start the job status job once jobid is populated
-		Statement.ifThen(()->{
-			return Long.parseLong(genericResponse.getJobid())>0;
-		},
-		jobstatus).retry().subscribe();
-
-		//Observable<Integer>jobcount = exportjobcount(exportJob,genericResponse);
-		Observable<Double>totalprice = totalprice(exportJob,genericResponse);
-		Statement.ifThen(()->{
-			return genericResponse.getJobstatus().endsWith(".zip");
-		},
-		totalprice).retry().subscribe();
-
-
-
-
-
-
-
-		/*		Observable<GenericResponse> subscriptionCheckStream = subscription(exportJob);
-		subscriptionCheckStream.subscribe();
-
-		Observable<GenericResponse> billingStandingCheckStream = billingStanding(exportJob);
-		billingStandingCheckStream.subscribe();
-
-		Observable<GenericResponse> checks = standingSubscriptionMerge(genericResponse, subscriptionCheckStream,
-				billingStandingCheckStream);
-
-		Observable<GenericResponse> pricingStream = pricing(exportJob, genericResponse);
-		checks.subscribe();
-
-		Statement.ifThen(new Func0<Boolean>() {
-			@Override
-			public Boolean call() {
-				System.out.println("ifThen -> " + genericResponse);
-				return genericResponse.getResult()
-						.equalsIgnoreCase(GenericResponse.SUCCESS);
-			}
-		}, pricingStream).retry().subscribe();*/
 		
-		subscriberIsInGoodStanding(exportJob.getUser()).subscribe((String standing) -> System.out.println(standing));
-
-		return genericResponse;
-	}
-
-
-
-
-
-	/*	private Observable<String> exportjobstatus(final ExportJob exportJob) {
-		return Observable
-				.just(dafifService.getStatus(exportJob.getJobid()));
-	}*/
-
-	private Observable<Double>rowprice(String icao){
-		return Observable.create(subscriber->{
-			try {
-				if (!subscriber.isUnsubscribed()) {
-					Double rowprice = pricingService2.getRowPrice(icao).getRowprice();
-					subscriber.onNext(rowprice);
-					subscriber.onCompleted();
-				}
-			}catch(Exception e) {
-				subscriber.onError(e);
-			}
-		});
-	}
-
-	private Observable<Integer> exportjobcount(ExportJob exportJob,
-			final GenericResponse genericResponse) {
-		return Observable.create(subscriber->{
-
-			try {
-				if (!subscriber.isUnsubscribed()) {
-					Integer count =Integer.parseInt(dafifService.getCount(genericResponse.getJobid()));
-					genericResponse.setRecordcount(count);
-					subscriber.onNext(count);
-					subscriber.onCompleted();
-				}
-			} catch (Exception e) {
-				subscriber.onError(e);
-			}
+		// TODO - General error handling.
+		// TODO - Token error handling if the token expires at any point during the process?
+		
+		// Do an up front synchronous token refresh if necessary. All service calls depend on a valid token.
+		if (!tokenCheck(exportJob.getToken())) {
+			String token = tokenRefresh(exportJob.getUser(), exportJob.getPassword());
+			exportJob.setToken(token);
 		}
 
+		// Asynchronously perform all authorization checks.
+		Observable<GenericResponse> subscriptionCheckStream = subscriptionAuthorizationCheck(exportJob).subscribeOn(Schedulers.newThread());
+		Observable<GenericResponse> goodStandingStream = subscriberIsInGoodStanding(exportJob.getUser()).subscribeOn(Schedulers.newThread());
+		
+		// Merge the check streams, reduce them into one GenericResponse, and then block for the result.
+		Observable<GenericResponse> allChecksStream = Observable.merge(subscriptionCheckStream, goodStandingStream);
+		Observable<GenericResponse> allChecksStreamReduced = reduceResponses(allChecksStream);
+		GenericResponse allChecksResponse = allChecksStreamReduced.toBlocking().first();
+		
+		// Use the result of the authorization checks to guard the export job.
+		if (allChecksResponse.getResult().equalsIgnoreCase(GenericResponse.SUCCESS)) {
+			// Kick off the export job. jobStream won't notify until it has a jobId.
+			Observable<ExportJob> startedJobStream = startJob(exportJob);
+			
+			// Block for the export job with jobId. Everything below is dependent on it.
+			ExportJob exportJobWithId = startedJobStream.toBlocking().first(); 
+			
+			// Use the job with jobId for the pricing and status (includes filename) streams.
+			Observable<GenericResponse> pricingStream = totalPrice(Observable.just(exportJobWithId)).subscribeOn(Schedulers.newThread());
+			Observable<GenericResponse> jobStatusStream = jobStatusStream(Observable.just(exportJobWithId)).subscribeOn(Schedulers.newThread());;
+			
+			// Merge all result GenericResponse streams, reduce them into one GenericResponse, and then block to return that GenericResponse.
+			Observable<GenericResponse> allResponsesStream = Observable.merge(Observable.just(allChecksResponse), pricingStream, jobStatusStream); 
+			Observable<GenericResponse> reducedResponseStream = reduceResponses(allResponsesStream);
+			GenericResponse reducedResult = reducedResponseStream.toBlocking().first();
+			return reducedResult;
+		} else {
+			// Return the GenericResponse containing only the responses from the authorization checks. (It could contain an error message).
+			return allChecksResponse;
+		}
 
-
-				);
+	}
+	
+	/**
+	 * Returns the response from the tokenService.isValid call for the provided token.
+	 */
+	private boolean tokenCheck(String token) {
+		return tokenService.isValid(token).equalsIgnoreCase("true");
 	}
 
-	private Observable<Double>totalprice(ExportJob exportJob,final GenericResponse genericResponse){
-		return Observable.zip(rowprice(exportJob.getIcao()),exportjobcount(exportJob,genericResponse),(rowprice,rowcount)->{
-			Double price =  rowprice*rowcount;
-			genericResponse.setTotalprice(price);
-			return price;
+	private String tokenRefresh(String user, String password) {
+		String token = tokenService.get(user, password);
+		feignconfig.setToken(token);
+		return token;
+	}
+	
+	/**
+	 * Takes a stream of GenericResponses and returns an observable for a reduced (merged) response.
+	 * 
+	 * The merged response has its result set to SUCCESS only if all the responses in the stream are also SUCCESS.
+	 */
+	private Observable<GenericResponse> reduceResponses(Observable<GenericResponse> responses) {
+		
+		GenericResponse initAccumulator = new GenericResponse();
+		initAccumulator.setResult(GenericResponse.SUCCESS);
+		Observable<GenericResponse> accumulatedResponse = responses.reduce(initAccumulator, (accumulator, nextResponse)-> {
+				if ((accumulator.getResult().equalsIgnoreCase(GenericResponse.SUCCESS)) 
+				   && nextResponse.getResult().equalsIgnoreCase(GenericResponse.SUCCESS)) {
+					accumulator.setResult(GenericResponse.SUCCESS);
+				} else {
+					accumulator.setResult(GenericResponse.ERROR);
+				}
+
+				if (nextResponse.getSource() != null) {
+					accumulator.getInformation().put(nextResponse.getSource(), nextResponse.getMessage());
+				}
+				
+				accumulator.getInformation().putAll(nextResponse.getInformation());
+				
+				if(nextResponse.getJobid() != null) {
+					accumulator.setJobid(nextResponse.getJobid());
+				}
+				
+				if(nextResponse.getJobstatus() != null) {
+					accumulator.setJobstatus(nextResponse.getJobstatus());
+				}
+				
+				if(nextResponse.getRecordcount() != null) {
+					accumulator.setRecordcount(nextResponse.getRecordcount());
+				}
+				
+				if(nextResponse.getTotalprice() != null) {
+					accumulator.setTotalprice(nextResponse.getTotalprice());
+				}
+				
+				return accumulator;
+		});
+		
+		return accumulatedResponse; 
+	}
+	
+	/**
+	 * Takes an exportJob, starts the job, and returns an Observable for the exportJob populated with a jobId.
+	 */
+	private Observable<ExportJob> startJob(ExportJob exportJob) {
+		return Observable.just(exportJob).map(eJob -> {
+			System.out.println("\t\t******** Firing dafifService.get()");
+			String jobid = dafifService.get(exportJob.getIcao(), exportJob.getDistance()); 
+			exportJob.setJobid(jobid);
+			return exportJob;
 		});
 	}
+	
+		
+	/**
+	 * Takes an observable for an exportJob.
+	 * Returns an observable for the job status of the observable, once it is *.zip
+	 */
+	private Observable<GenericResponse> jobStatusStream(Observable<ExportJob> jobStream) {
+	
+		// Query the dafif service repeatedly for the job status, but don't take the result until it ends in .zip,
+		//       and map the jobStatus into a GenericResponse.
+		Observable<GenericResponse> jobResponseStream = jobStream.subscribeOn(Schedulers.newThread())
+			.single()
+			.map(exportJob -> {
+				String status = dafifService.getStatus(exportJob.getJobid());
+				System.out.println("\t\t******** STATUS: " + status);
+				return status;
+			})
+			.repeat()
+			.skipWhile(jobStatus -> {return !jobStatus.endsWith(".zip");}) 
+			.first()
+			.map(jobStatus -> {
+				// Map the .zip job status to a Generic Response
+				GenericResponse r = new GenericResponse();
+				r.setResult(GenericResponse.SUCCESS);
+				r.setJobstatus(jobStatus);
+				r.setSource("Job Status Check");
+				r.setMessage("Job Status Returned: " + jobStatus);
+				return r;
+			});
+			
+		// Note: The above does not send more than one outstanding request at a time. 
+		// (skipWhile does not ask for the next until it evaluates prev).
+		
+		return jobResponseStream;
+	}
 
-	private Observable<String> exportjobstatus(final ExportJob exportJob, final GenericResponse genericResponse) {
-		return Observable.create((Subscriber<? super String>subscriber)-> {
+	/**
+	 * Takes an observable for a exportJob.
+	 * Returns an observable for a GenericResponse with the total price populated.
+	 */
+	private Observable<GenericResponse> totalPrice(Observable<ExportJob> jobStream) {
+		
+		Observable<Double> rowPriceStream = jobStream.map(exportJob -> {
+			double rowPrice = pricingService2.getRowPrice(exportJob.getIcao()).getRowprice();
+			System.out.println("\t\t******** Row Price = " + rowPrice);
+			return rowPrice;
+		});
+		Observable<Integer> rowCountStream = jobStream.map(exportJob -> {
+			int rowCount = Integer.parseInt(dafifService.getCount(exportJob.getJobid()));
+			System.out.println("\t\t******** Row Count = " + rowCount);
+			return rowCount;
+		}).retry();
+		
+		return Observable.zip(rowPriceStream, rowCountStream,
+				  (rowprice,rowcount) -> {
+					GenericResponse r = new GenericResponse();
+					Double price =  rowprice*rowcount;
+					r.setSource("Row Count Service x Row Price Service");
+					r.setMessage("Row Price: " + rowprice + " Row Count: " + rowcount);
+					r.setResult(GenericResponse.SUCCESS);
+					r.setTotalprice(price);
+					r.setRecordcount(rowcount);
+					System.out.println("\t\t******** Total Price = " + price);
+					return r;
+				 });
+	}
 
+	/**
+	 * Takes an export job and returns an observable for a GenericResponse for the subscription level check.
+	 * If the exportJob's subscription level has permission for the requested resource and operation,
+	 * the GenericResponse's result will be SUCCESS, otherwise ERROR. 
+	 * 
+	 */
+	private Observable<GenericResponse> subscriptionAuthorizationCheck(ExportJob exportJob) {
+		return Observable.create(subscriber -> {
 			try {
-				if (!subscriber.isUnsubscribed()) {
-					String status =dafifService.getStatus(genericResponse.getJobid());
-					genericResponse.setJobstatus(status);
-					subscriber.onNext(status);
-					subscriber.onCompleted();
+				GenericResponse response = new GenericResponse();
+				response.setSource("Subscription Service");
+				SubscriptionLevelAuthorization subCheckResult = ssc.get(exportJob.getSubscriptionLevel(), 
+						exportJob.getRequestedResource(), exportJob.getRequestedOperation());
+				if (subCheckResult != null && subCheckResult.isAuthorized()) {
+					response.setResult(GenericResponse.SUCCESS);
+					response.setMessage("Subscription level " + exportJob.getSubscriptionLevel() 
+										+ " may " + exportJob.getRequestedOperation() 
+										+ " " + exportJob.getRequestedResource());
+				} else {
+					response.setResult(GenericResponse.ERROR);
+					response.setMessage("Subscription level " + exportJob.getSubscriptionLevel() 
+										+ " may NOT " + exportJob.getRequestedOperation() 
+										+ " " + exportJob.getRequestedResource());
 				}
+				
+				if(!subscriber.isUnsubscribed()) {
+					subscriber.onNext(response);
+					subscriber.onCompleted();
+				} 
 			} catch (Exception e) {
 				subscriber.onError(e);
-			}
-
-
-
-
-
-
-
-		})
-		.repeat()
-		.takeUntil(new Func1<String, Boolean>() {
-			@Override
-			public Boolean call(String response) {
-				return response.endsWith(".zip");
-			}
+			}		
+		});	
+	}
+	
+	/**
+	 * Takes an export job and returns an observable for a GenericResponse for the billing service good standing check.
+	 * If the exportJob's user is in good standing, the GenericResponse's result will be SUCCESS, otherwise ERROR. 
+	 * 
+	 */
+	private Observable<GenericResponse> subscriberIsInGoodStanding(String userName) {
+		return Observable.create(subscriber -> {
+			try {
+				GenericResponse response = new GenericResponse();
+				response.setSource("Billing Service");
+				String goodStanding = billingService.isUserInGoodStanding(userName);
+				if (goodStanding != null && goodStanding.equals("TRUE")) {
+					response.setResult(GenericResponse.SUCCESS);
+					response.setMessage("User " + userName + " is in good standing.");
+				} else {
+					response.setResult(GenericResponse.ERROR);
+					response.setMessage("User " + userName + " is not in good standing.");
+				}
+				
+				if(!subscriber.isUnsubscribed()) {
+					subscriber.onNext(response);
+					subscriber.onCompleted();
+				} 
+			} catch (Exception e) {
+				subscriber.onError(e);
+			}		
 		});
 	}
-
-
-
 
 	private Observable<String> export(final ExportJob exportJob, final GenericResponse genericResponse, Observable<String> export2) {
 		return Observable.create((Subscriber<? super String>subscriber)-> {
-
 			try {
 				if (!subscriber.isUnsubscribed()) {
 					System.out.println("Trying to call export with token: " + feignconfig.getToken());
@@ -238,10 +330,6 @@ public class NjTplusExportOrchRxjavaApplication {
 			} catch (Exception e) {
 				subscriber.onError(e);
 			}
-
-
-
-
 
 		}).onErrorResumeNext(refreshTokenAndRetry(export2,exportJob.getUser(),exportJob.getPassword())).subscribeOn(Schedulers.computation());
 
@@ -258,10 +346,6 @@ public class NjTplusExportOrchRxjavaApplication {
 			} catch (Exception e) {
 				subscriber.onError(e);
 			}
-
-
-
-
 
 		});
 		return export2;
@@ -308,20 +392,6 @@ public class NjTplusExportOrchRxjavaApplication {
 		return out;
 	}
 	
-	private Observable<String> subscriberIsInGoodStanding(String userName) {
-		return Observable.create(subscriber -> {
-			try {
-				String goodStanding = billingService.isUserInGoodStanding(userName);
-				if(!subscriber.isUnsubscribed()) {
-					subscriber.onNext(goodStanding);
-					subscriber.onCompleted();
-				} 
-			} catch (Exception e) {
-				subscriber.onError(e);
-			}		
-		});
-	}
-
 	public static void main(String[] args) {
 		SpringApplication.run(NjTplusExportOrchRxjavaApplication.class, args);
 	}
